@@ -1,0 +1,3 @@
+#!/bin/bash
+
+deploy_app releases selah-test test.selah.cloud

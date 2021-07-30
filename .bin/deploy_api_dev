@@ -1,0 +1,18 @@
+#!/bin/bash
+
+cd `dirname "$0"`
+cd ../api
+
+STACK_NAME="selah-dev"
+DEPLOY_BUCKET="aws-sam-cli-managed-default-samclisourcebucket-1awqfijectqwo"
+
+# Make all lambda code readable/executable by any user (otherwise AWS will have permission issues)
+chmod -R a+rx .
+
+# Build and deploy
+sam build
+sam deploy --stack-name $STACK_NAME --s3-bucket $DEPLOY_BUCKET --s3-prefix $STACK_NAME --capabilities CAPABILITY_IAM --parameter-overrides AdminEmail=$SELAH_EMAIL
+
+# Reset permissions so git doesn't think files changed
+find . -type d -exec chmod u=rwx,g=rx,o= {} +
+find . -type f -exec chmod u=rw,g=r,o= {} +

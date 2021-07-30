@@ -1,0 +1,3 @@
+#!/bin/bash
+
+deploy_app releases_singit singit-prod singit.cloud

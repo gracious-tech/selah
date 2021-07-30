@@ -1,0 +1,89 @@
+#!/usr/bin/xonsh
+
+from pathlib import Path
+
+
+$RAISE_SUBPROC_ERROR = True
+
+
+# Discover last version
+# WARN Assuming starting at project root (not within bin dir)
+app_config_path = Path('app_config/app_config.yaml')
+app_config_contents = app_config_path.read_text()
+for line in app_config_contents.splitlines():
+    if line.startswith('version: '):
+        version_old = line.split("'")[1]
+        break
+
+
+# Prompt for next version
+version_new = input(f"New version (old {version_old}): ")
+
+
+# Overwrite version in app_config
+app_config_contents = app_config_contents.replace(f"version: '{version_old}'", f"version: '{version_new}'")
+app_config_path.write_text(app_config_contents)
+
+
+# Apply app config with new version and selah secrets
+apply_app_config selah prod
+
+
+# Commit version change
+git add app_config/app_config.yaml
+commit_msg = f"Release {version_new}"
+git commit -m @(commit_msg)
+git tag @(version_new)
+
+
+# Make new release's dir
+release_dir = f'releases/{version_new}'
+mkdir @(release_dir)
+
+
+# Build the API
+cd api
+sam build --build-dir @('../' + release_dir + '/api')
+cd ..
+
+
+# Build site
+cd site
+npm run build
+cd ..
+mv site/dist @(release_dir + "/bucket")
+
+
+# REPEAT FOR SINGIT
+
+
+# Apply singit's app config
+apply_app_config singit prod
+
+
+# Switch other media that must be done manually
+cp -f site/static/_assets/optional/social_preview_singit.png site/static/_assets/optional/social_preview.png
+
+
+# Make new release's dir
+release_dir = f'releases_singit/{version_new}'
+mkdir @(release_dir)
+
+
+# Build the API
+cd api
+sam build --build-dir @('../' + release_dir + '/api')
+cd ..
+
+
+# Build site (don't include maps)
+cd site
+npm run build
+find dist -name "*.map" -type f -delete
+cd ..
+mv site/dist @(release_dir + "/bucket")
+
+
+# Restore original files
+apply_app_config selah dev
+git co site/static/_assets/optional/social_preview.png

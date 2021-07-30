@@ -1,0 +1,200 @@
+
+# For !Ref/!Join/etc see: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference.html
+
+AWSTemplateFormatVersion: "2010-09-09"
+
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+    AdminEmail:
+        Type: String
+        Description: The email address that will recieve notifications about errors and contact from users
+
+Globals:
+    Function:
+        Runtime: python3.8
+
+Resources:
+
+    # Database
+    # NOTE AWS always encrypts DynamoDB data, by default using AWS owned keys
+
+    TableRooms:
+        Type: AWS::DynamoDB::Table
+        Properties:
+            TableName: !Join ['', [!Ref AWS::StackName, -rooms]]
+            AttributeDefinitions:
+                - {AttributeName: id, AttributeType: S}
+            KeySchema:
+                - {AttributeName: id, KeyType: HASH}
+            # TODO Change to provisioned if cheaper and know how much capacity is needed
+            BillingMode: PAY_PER_REQUEST
+            TimeToLiveSpecification:
+                Enabled: true
+                AttributeName: expire
+
+    TableClients:
+        Type: AWS::DynamoDB::Table
+        Properties:
+            TableName: !Join ['', [!Ref AWS::StackName, -clients]]
+            AttributeDefinitions:
+                - {AttributeName: socket, AttributeType: S}
+                - {AttributeName: room_id, AttributeType: S}
+                - {AttributeName: room_joined, AttributeType: N}
+            KeySchema:
+                - {AttributeName: socket, KeyType: HASH}
+            GlobalSecondaryIndexes:
+                -
+                    IndexName: by_room
+                    KeySchema:
+                        - {AttributeName: room_id, KeyType: HASH}
+                        - {AttributeName: room_joined, KeyType: RANGE}  # Sort by time joined room
+                    Projection:
+                        ProjectionType: ALL
+            # TODO Change to provisioned if cheaper and know how much capacity is needed
+            BillingMode: PAY_PER_REQUEST
+            TimeToLiveSpecification:
+                Enabled: true
+                AttributeName: expire
+
+    # Websocket API
+
+    SocketAPI:
+        Type: AWS::ApiGatewayV2::Api
+        Properties:
+            Name: !Join ['', [!Ref AWS::StackName, -socket]]
+            ProtocolType: WEBSOCKET
+            RouteSelectionExpression: "$request.body.method"  # Though only one default route for now
+
+    SocketDeployment:
+        Type: AWS::ApiGatewayV2::Deployment
+        DependsOn: [RouteConnect, RouteDisconnect, RouteDefault]
+        Properties:
+            ApiId: !Ref SocketAPI
+
+    SocketStage:
+        # NOTE Staging is done at CloudFormation stack level, so API only ever has one stage
+        Type: AWS::ApiGatewayV2::Stage
+        Properties:
+            StageName: stageless
+            ApiId: !Ref SocketAPI
+            DeploymentId: !Ref SocketDeployment
+
+    # Functions
+
+    FunctionMain:
+        Type: AWS::Serverless::Function
+        Properties:
+            CodeUri: code/
+            Handler: entrypoint.enter
+            MemorySize: 128  # 128 MB is minimum (usually use ~83 MB)
+            # Do get timeouts sometimes but those executions get stuck and prev exceeded 15secs
+            #   so this timeout just cuts stuck executions short, as normal exec won't exceed ~6s
+            #   (average ~0.3s)
+            # NOTE Unlike memory, you only pay for actual duration (not the timeout limit)
+            # NOTE Currently setting at 20 seconds as Stripe requests can be 10+ seconds
+            Timeout: 20
+            Environment:
+                Variables:
+                    STACK: !Ref AWS::StackName
+                    TOPIC_ERRORS: !Ref TopicErrors
+                    TOPIC_CONTACT: !Ref TopicContact
+            Policies:
+                # Allow function to access db tables
+                - DynamoDBCrudPolicy:
+                    TableName: !Ref TableRooms
+                - DynamoDBCrudPolicy:
+                    TableName: !Ref TableClients
+                # Allow function to send back messages via sockets
+                - Statement:
+                    Effect: Allow
+                    Action: [execute-api:ManageConnections]
+                    Resource: [!Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${SocketAPI}/*']
+                # Allow function to publish to SNS topics
+                - Statement:
+                    Effect: Allow
+                    Action: [SNS:Publish]
+                    Resource: [!Ref TopicErrors, !Ref TopicContact]
+
+    FunctionMainPermission:
+        Type: AWS::Lambda::Permission
+        DependsOn: [SocketAPI, FunctionMain]
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !Ref FunctionMain
+            Principal: apigateway.amazonaws.com
+
+    FunctionMainIntegration:
+        Type: AWS::ApiGatewayV2::Integration
+        Properties:
+            ApiId: !Ref SocketAPI
+            IntegrationType: AWS_PROXY
+            IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionMain.Arn}/invocations
+
+    # Routes
+
+    RouteConnect:
+        Type: AWS::ApiGatewayV2::Route
+        Properties:
+            ApiId: !Ref SocketAPI
+            RouteKey: $connect
+            Target: !Join ['/', ['integrations', !Ref FunctionMainIntegration]]
+            AuthorizationType: NONE
+
+    RouteDisconnect:
+        Type: AWS::ApiGatewayV2::Route
+        Properties:
+            ApiId: !Ref SocketAPI
+            RouteKey: $disconnect
+            Target: !Join ['/', ['integrations', !Ref FunctionMainIntegration]]
+            AuthorizationType: NONE
+
+    RouteDefault:
+        Type: AWS::ApiGatewayV2::Route
+        Properties:
+            ApiId: !Ref SocketAPI
+            RouteKey: $default
+            Target: !Join ['/', ['integrations', !Ref FunctionMainIntegration]]
+            AuthorizationType: NONE
+
+    # Topics
+
+    TopicErrors:
+        Type: AWS::SNS::Topic
+        Properties:
+            TopicName: !Join ['', [!Ref AWS::StackName, -errors]]
+            Subscription: [{Protocol: email, Endpoint: !Ref AdminEmail}]
+
+    TopicContact:
+        Type: AWS::SNS::Topic
+        Properties:
+            TopicName: !Join ['', [!Ref AWS::StackName, -contact]]
+            Subscription: [{Protocol: email, Endpoint: !Ref AdminEmail}]
+
+    # Alarms
+
+    AlarmErrors:
+        Type: AWS::CloudWatch::Alarm
+        Properties:
+            Dimensions: [{Name: FunctionName, Value: !Ref FunctionMain}]
+            AlarmActions: [!Ref TopicErrors]
+            MetricName: Errors
+            Namespace: AWS/Lambda
+            EvaluationPeriods: 1
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            Period: 600  # Seconds (10 mins)
+            Statistic: Sum
+            Threshold: 1
+
+    AlarmThrottles:
+        Type: AWS::CloudWatch::Alarm
+        Properties:
+            Dimensions: [{Name: FunctionName, Value: !Ref FunctionMain}]
+            AlarmActions: [!Ref TopicErrors]
+            MetricName: Throttles
+            Namespace: AWS/Lambda
+            EvaluationPeriods: 1
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            Period: 600  # Seconds (10 mins)
+            Statistic: Sum
+            Threshold: 1

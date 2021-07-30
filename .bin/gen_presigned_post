@@ -1,0 +1,46 @@
+#!/usr/bin/env python
+
+""" Usage
+
+Run with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY set to a user just for this task
+Will print out a dict of fields to be submitted in the post request
+
+"""
+
+raise Exception("""
+
+Current plan is not secure as any user could replace an image if they were in the room, even if they
+were not admin simply by knowing the address of the image.
+
+Need to generate presigned posts per room that only admins have access to.
+
+
+""")
+
+
+import json
+
+import boto3
+
+
+result = boto3.client('s3').generate_presigned_post(
+    # Prompt for bucket name
+    Bucket=input("Bucket: "),
+    # Can upload to any name under prefix
+    # NOTE Prefixed with 'roomless' in case one-day store images under room ids or another system
+    Key='roomless/${filename}',
+    # Conditions
+    # See https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-HTTPPOSTConstructPolicy.html
+    Conditions=[
+        # Only allow uploads up to 500kb in size (set in bytes)
+        # NOTE 1920x1080 jpeg photo with 75 quality ~=220kb
+        ['content-length-range', 1, 500 * 1000],
+        # Only allow jpegs (for now)
+        ['eq', '$Content-Type', 'image/jpeg'],
+    ],
+    # Signature valid for 100 years (set in seconds)
+    # NOTE delete the AWS access key used to sign if conditions change
+    ExpiresIn=60*60*24*365*100,
+)
+
+print(json.dumps(result, indent=4))

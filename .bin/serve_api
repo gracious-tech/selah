@@ -1,0 +1,8 @@
+#!/bin/bash
+
+cd `dirname "$0"`
+cd ../api
+
+echo "Not supported yet: https://github.com/awslabs/aws-sam-cli/issues/896"
+exit
+sudo pipenv run sam local start-api

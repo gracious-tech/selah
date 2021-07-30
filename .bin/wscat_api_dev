@@ -1,0 +1,9 @@
+#!/bin/bash
+
+cd `dirname "$0"`
+cd ../site
+
+STACK_NAME="selah-dev"
+DEPLOY_BUCKET="aws-sam-cli-managed-default-samclisourcebucket-1awqfijectqwo"
+
+./node_modules/.bin/wscat -c wss://evg4p2tevg.execute-api.us-west-2.amazonaws.com/stageless

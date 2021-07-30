@@ -1,0 +1,15 @@
+
+# Everywhere
+node_modules/
+
+# Specific
+/.venv/
+/site/dist/
+/site/src/app_config.json
+/site/static/_assets/manifest.json
+/api/.aws-sam/
+/api/code/app_config.json
+/.deployments/
+/releases/
+/releases_singit/
+/app_config/app_config_*

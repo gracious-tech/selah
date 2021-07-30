@@ -1,0 +1,37 @@
+#!/usr/bin/xonsh
+
+# Usage: deploy_app releases_dir stack_name domain_name
+
+import sys
+from pathlib import Path
+
+sys.path.append('.venv/lib/python3.8/site-packages')
+from semantic_version import Version
+
+
+$RAISE_SUBPROC_ERROR = True
+
+
+# Unpack args
+releases_dir = $ARG1
+stack_name = $ARG2
+domain_name = $ARG3
+
+# Constants
+UPLOAD_BUCKET = 'aws-sam-cli-managed-default-samclisourcebucket-1awqfijectqwo'
+
+# Determine latest version (deploy sync does this as well)
+# WARN Assumes no prerelease/build special versions (where as deploy sync DOES check for this)
+# WARN If get this wrong then deploy sync will deploy a different version to API!
+version = str(max([Version(p.name) for p in Path(releases_dir).iterdir()]))
+print("Deploying version: " + version)
+
+# Deploy the API
+# Make all lambda code readable/executable by any user (otherwise AWS will have permission issues)
+cd @(releases_dir)/@(version)/api
+chmod -R a+rx .
+sam deploy --stack-name @(stack_name) --s3-bucket @(UPLOAD_BUCKET) --s3-prefix @(stack_name) --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides AdminEmail=$SELAH_EMAIL
+cd ../../../
+
+# Deploy site
+deploy @(domain_name) sync
